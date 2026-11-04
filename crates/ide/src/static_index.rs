@@ -320,33 +320,41 @@ impl StaticIndex {
 
         let def_map = Default::default();
         let tokens = Default::default();
-        let files = std::thread::scope(|s| {
+        // Each thread takes the next file to index, rather than a fixed share of them, so that
+        // the slow ones (ex: a file of huge tables) don't hold up the others' shares; the files
+        // are in their order again afterwards.
+        let next = AtomicUsize::new(0);
+        let mut files: Vec<StaticIndexedFile> = std::thread::scope(|s| {
             let threads: Vec<_> = analyses
                 .iter_mut()
-                .enumerate()
-                .map(|(thread_index, analysis)| {
-                    let files_to_index = files_to_index
-                        .iter()
-                        .copied()
-                        .enumerate()
-                        .filter(move |(index, _)| index % num_threads == thread_index)
-                        .map(|(_, file_id)| file_id);
-
-                    s.spawn(|| {
+                .map(|analysis| {
+                    let files_to_index = &files_to_index;
+                    let next = &next;
+                    let tokens = &tokens;
+                    let def_map = &def_map;
+                    s.spawn(move || {
                         let analysis = analysis;
                         hir::attach_db(&analysis.db, || {
-                            files_to_index
-                                .into_iter()
-                                .flat_map(|file_id| {
-                                    index_file(analysis, &tokens, &def_map, include_hovers, file_id)
-                                })
-                                .collect::<Vec<_>>()
+                            let mut indexed = vec![];
+                            while let Some(&file_id) =
+                                files_to_index.get(next.fetch_add(1, Ordering::Relaxed))
+                            {
+                                indexed.extend(index_file(
+                                    analysis,
+                                    tokens,
+                                    def_map,
+                                    include_hovers,
+                                    file_id,
+                                ));
+                            }
+                            indexed
                         })
                     })
                 })
                 .collect();
             threads.into_iter().flat_map(|join_handle| join_handle.join().unwrap()).collect()
         });
+        files.sort_by_key(|file| file.file_id);
 
         StaticIndex { files, tokens }
     }

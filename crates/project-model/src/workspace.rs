@@ -765,6 +765,24 @@ impl ProjectWorkspace {
     /// The return type contains the path and whether or not
     /// the root is a member of the current workspace
     pub fn to_roots(&self) -> Vec<PackageRoot> {
+        let mut roots = self.package_roots();
+        // (The extra includes, ex: a build's generated files that its crates `include!` by
+        // their absolute paths, are a local root of their own, rather than in every local
+        // package's: those would all be one source root then (`ProjectFolders` merges the roots
+        // sharing a path), every one of whose crates' names would be resolved for any of its
+        // files (see `relevant_crates`).  `SourceDatabase::resolve_path` finds them for the
+        // `include!`s.)
+        if !self.extra_includes.is_empty() {
+            roots.push(PackageRoot {
+                is_local: true,
+                include: self.extra_includes.clone(),
+                exclude: vec![],
+            });
+        }
+        roots
+    }
+
+    fn package_roots(&self) -> Vec<PackageRoot> {
         let mk_sysroot = || {
             let mut r = match self.sysroot.workspace() {
                 RustLibSrcWorkspace::Workspace { ws, .. } => ws
@@ -817,12 +835,7 @@ impl ProjectWorkspace {
                 .crates()
                 .map(|(_, krate)| PackageRoot {
                     is_local: krate.is_workspace_member,
-                    include: krate
-                        .include
-                        .iter()
-                        .cloned()
-                        .chain(self.extra_includes.iter().cloned())
-                        .collect(),
+                    include: krate.include.clone(),
                     exclude: krate.exclude.clone(),
                 })
                 .collect::<FxHashSet<_>>()
@@ -867,7 +880,6 @@ impl ProjectWorkspace {
 
                         let mut exclude = vec![pkg_root.join(".git")];
                         if is_local {
-                            include.extend(self.extra_includes.iter().cloned());
                             exclude.push(pkg_root.join("target"));
                         }
                         if !is_member {
@@ -948,8 +960,6 @@ impl ProjectWorkspace {
 
                         let mut exclude = vec![pkg_root.join(".git")];
                         if is_local {
-                            include.extend(self.extra_includes.iter().cloned());
-
                             exclude.push(pkg_root.join("target"));
                         }
                         if !is_member {

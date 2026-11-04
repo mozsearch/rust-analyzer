@@ -271,7 +271,17 @@ pub trait SourceDatabase: salsa::Database + std::fmt::Debug {
         // FIXME: this *somehow* should be platform agnostic...
         let source_root = self.file_source_root(path.anchor);
         let source_root = self.source_root(source_root.source_root_id(self));
-        source_root.source_root(self).resolve_path(path)
+        if let Some(file) = source_root.source_root(self).resolve_path(path) {
+            return Some(file);
+        }
+        // (An absolute path may be another local root's, ex: an extra include's, which is a root
+        // of its own; see project-model's `ProjectWorkspace::to_roots`.)
+        let abs = AbsPathBuf::try_from(path.path).ok()?;
+        let abs = VfsPath::from(abs);
+        LocalRoots::try_get(self)?
+            .roots(self)
+            .iter()
+            .find_map(|&root| self.source_root(root).source_root(self).file_for_path(&abs).copied())
     }
 
     #[doc(hidden)]

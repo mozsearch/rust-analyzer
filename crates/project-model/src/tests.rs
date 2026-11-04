@@ -288,3 +288,17 @@ fn smoke_test_real_sysroot_cargo() {
         &Default::default(),
     );
 }
+
+#[test]
+fn extra_includes_are_a_root_of_their_own() {
+    let extra = AbsPathBuf::assert_utf8(temp_dir().join("extra-includes"));
+    let workspace = ProjectWorkspace {
+        extra_includes: vec![extra.clone()],
+        ..load_workspace_from_metadata("hello-world-metadata.json")
+    };
+    let roots = workspace.to_roots();
+    let with_extra: Vec<_> = roots.iter().filter(|root| root.include.contains(&extra)).collect();
+    assert_eq!(with_extra.len(), 1, "{roots:?}");
+    assert!(with_extra[0].is_local);
+    assert_eq!(with_extra[0].include, vec![extra]);
+}

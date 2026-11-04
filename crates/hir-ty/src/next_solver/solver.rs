@@ -372,7 +372,29 @@ impl<'db> SolverDelegate for SolverContext<'db> {
                 } else if arg.is_infer() {
                     Some(Certainty::AMBIGUOUS)
                 } else {
-                    None
+                    // `well_formed_goals` isn't implemented, so evaluating this goal could only
+                    // be ambiguous, and once it has no inference variables, stalled on nothing:
+                    // it would stay pending until the end of inference, and every later
+                    // evaluation of the pending obligations would evaluate it again, which is
+                    // quadratic in the number of a body's generic paths (ex: an array of
+                    // thousands of `Some(..)`s).  Until it's implemented, such a goal holds
+                    // (but one with aliases, ex: opaque types, or of a closure or a coroutine,
+                    // which inference finishes with, is still evaluated).
+                    let arg = self.resolve_vars_if_possible(arg);
+                    let closure = arg.as_type().is_some_and(|ty| {
+                        matches!(
+                            ty.kind(),
+                            TyKind::Closure(..)
+                                | TyKind::CoroutineClosure(..)
+                                | TyKind::Coroutine(..)
+                                | TyKind::CoroutineWitness(..)
+                        )
+                    });
+                    if !arg.has_non_region_infer() && !arg.has_aliases() && !closure {
+                        Some(Certainty::Yes)
+                    } else {
+                        None
+                    }
                 }
             }
             _ => None,

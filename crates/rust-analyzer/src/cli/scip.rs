@@ -52,7 +52,8 @@ impl flags::Scip {
         let load_cargo_config = LoadCargoConfig {
             load_out_dirs_from_check: true,
             with_proc_macro_server: ProcMacroServerChoice::Sysroot,
-            prefill_caches: true,
+            // (Only the files' crates' and their dependencies' caches, below, for some files.)
+            prefill_caches: self.only_files.is_none(),
             num_worker_threads: num_threads,
             proc_macro_processes: config.proc_macro_num_processes(),
         };
@@ -73,7 +74,42 @@ impl flags::Scip {
             VendoredLibrariesConfig::Included { workspace_root: &root.clone().into() }
         };
 
-        let si = StaticIndex::compute(&analysis, vendored_libs_config, false, num_threads);
+        // Only the files listed, if any, and their crates' and their dependencies' caches primed
+        // in parallel, as they would all have been.
+        let only_files = match &self.only_files {
+            Some(list) => {
+                let mut files = FxHashSet::default();
+                for line in std::fs::read_to_string(list)?.lines() {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    match vfs.file_id(&vfs::VfsPath::from(root.join(line))) {
+                        Some((file_id, _)) => {
+                            files.insert(file_id);
+                        }
+                        None => eprintln!("Not in the workspace: {line}"),
+                    }
+                }
+                let mut crates = FxHashSet::default();
+                for &file_id in &files {
+                    for &krate in ide_db::base_db::relevant_crates(db, file_id) {
+                        crates.extend(krate.transitive_deps(db));
+                    }
+                }
+                let crates: Vec<_> = crates.into_iter().collect();
+                ide_db::prime_caches::parallel_prime_caches(db, &crates, num_threads, &|_| ());
+                Some(files)
+            }
+            None => None,
+        };
+        let si = StaticIndex::compute(
+            &analysis,
+            vendored_libs_config,
+            false,
+            num_threads,
+            only_files.as_ref(),
+        );
 
         let metadata = scip_types::Metadata {
             version: scip_types::ProtocolVersion::UnspecifiedProtocolVersion.into(),
@@ -548,6 +584,7 @@ mod test {
             },
             false,
             1,
+            None,
         );
 
         let FilePosition { file_id, offset } = position;
@@ -995,6 +1032,7 @@ pub mod example_mod {
             },
             false,
             1,
+            None,
         );
 
         let file = si.files.first().unwrap();
@@ -1020,6 +1058,7 @@ pub mod example_mod {
             },
             false,
             1,
+            None,
         );
 
         let file = si.files.first().unwrap();
@@ -1050,6 +1089,7 @@ pub mod example_mod {
             },
             false,
             1,
+            None,
         );
 
         let file = si.files.first().unwrap();
@@ -1084,6 +1124,7 @@ pub mod example_mod {
             },
             false,
             1,
+            None,
         );
 
         let file = si.files.first().unwrap();

@@ -11,7 +11,7 @@ use dashmap::{
 use either::Either;
 use hir::{Crate, Module, Semantics, db::HirDatabase};
 use ide_db::{
-    FileId, FileRange, RootDatabase,
+    FileId, FileRange, FxHashSet, RootDatabase,
     base_db::{SourceDatabase, VfsPath},
     defs::{Definition, IdentClass},
     documentation::Documentation,
@@ -281,10 +281,17 @@ impl StaticIndex {
         vendored_libs_config: VendoredLibrariesConfig<'_>,
         include_hovers: bool,
         num_threads: usize,
+        only_files: Option<&FxHashSet<FileId>>,
     ) -> Self {
         let db = &analysis.db;
 
-        let files_to_index = {
+        // (Only the files given, if any, without walking every crate's modules, which would
+        // resolve every crate's names.)
+        let files_to_index = if let Some(only_files) = only_files {
+            let mut files_to_index: Vec<_> = only_files.iter().copied().collect();
+            files_to_index.sort();
+            files_to_index
+        } else {
             let mut files_to_index: Vec<_> = hir::attach_db(db, || {
                 let modules = all_modules(db).into_iter();
 
@@ -431,7 +438,7 @@ mod tests {
         vendored_libs_config: VendoredLibrariesConfig<'_>,
     ) {
         let (analysis, ranges) = fixture::annotations_without_marker(ra_fixture);
-        let s = StaticIndex::compute(&analysis, vendored_libs_config, true, 1);
+        let s = StaticIndex::compute(&analysis, vendored_libs_config, true, 1, None);
         let mut range_set: FxHashSet<_> = ranges.iter().map(|it| it.0).collect();
         for f in s.files {
             for (range, _) in f.tokens {
@@ -457,7 +464,7 @@ mod tests {
         vendored_libs_config: VendoredLibrariesConfig<'_>,
     ) {
         let (analysis, ranges) = fixture::annotations_without_marker(ra_fixture);
-        let s = StaticIndex::compute(&analysis, vendored_libs_config, true, 1);
+        let s = StaticIndex::compute(&analysis, vendored_libs_config, true, 1, None);
         let mut range_set: FxHashSet<_> = ranges.iter().map(|it| it.0).collect();
         for (_, t) in s.tokens.iter() {
             if let Some(t) = t.definition {
@@ -482,7 +489,7 @@ mod tests {
         vendored_libs_config: VendoredLibrariesConfig<'_>,
     ) {
         let (analysis, ranges) = fixture::annotations_without_marker(ra_fixture);
-        let s = StaticIndex::compute(&analysis, vendored_libs_config, true, 1);
+        let s = StaticIndex::compute(&analysis, vendored_libs_config, true, 1, None);
         let mut range_set: FxHashMap<_, i32> = ranges.iter().map(|it| (it.0, 0)).collect();
 
         // Make sure that all references have at least one range. We use a HashMap instead of a
@@ -512,6 +519,47 @@ mod tests {
                 panic!("unfound reference {range:?}");
             }
         }
+    }
+
+    #[test]
+    fn only_files() {
+        let (analysis, ranges) = fixture::annotations_without_marker(
+            r#"
+//- /main.rs
+mod a;
+fn main() {
+ //^^^^
+    a::foo();
+}
+//- /a.rs
+pub fn foo() {}
+     //^^^
+"#,
+        );
+        let main_file = ranges[0].0.file_id;
+        let a_file = ranges[1].0.file_id;
+        let only_files: FxHashSet<_> = [main_file].into_iter().collect();
+        let s = StaticIndex::compute(
+            &analysis,
+            VendoredLibrariesConfig::Included {
+                workspace_root: &VfsPath::new_virtual_path("/workspace".to_owned()),
+            },
+            true,
+            1,
+            Some(&only_files),
+        );
+        assert_eq!(s.files.iter().map(|f| f.file_id).collect::<Vec<_>>(), vec![main_file]);
+        // (Its references to the others' definitions are still resolved.)
+        assert!(
+            s.files[0].tokens.iter().any(|(_, id)| s
+                .tokens
+                .get(*id)
+                .unwrap()
+                .definition
+                .unwrap()
+                .file_id
+                == a_file)
+        );
     }
 
     #[test]

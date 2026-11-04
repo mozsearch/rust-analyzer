@@ -194,6 +194,11 @@ xflags::xflags! {
 
             /// The number of worker threads for cache priming. Defaults to the number of physical cores.
             optional --num-threads num_threads: usize
+
+            /// A file listing the files to index (paths relative to `path`, one per line), to index
+            /// only them, ex: a change's files: the rest is only analyzed as far as they need it, and
+            /// only their crates' and their dependencies' caches are primed.
+            optional --only-files only_files: PathBuf
         }
     }
 }
@@ -342,6 +347,7 @@ pub struct Scip {
     pub config_path: Option<PathBuf>,
     pub exclude_vendored_libraries: bool,
     pub num_threads: Option<usize>,
+    pub only_files: Option<PathBuf>,
 }
 
 impl RustAnalyzer {

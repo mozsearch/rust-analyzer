@@ -459,15 +459,29 @@ pub(super) fn impl_method<'a, 'lt, 'db, DB: HirDatabase>(
                 return None;
             }
 
-            let ret_ty = it.ret_type(db).instantiate(ty.type_arguments());
+            // (In the scope's context, the goal's, rather than the method's, whose crate's
+            // impls are only its own and its dependencies', ex: `core`'s for a `core` impl's
+            // method, which don't have the scope's crate's.)
+            let ret_ty = it
+                .ret_type(db)
+                .instantiate(ty.type_arguments())
+                .rebase_into_or_error(db, &ctx.goal);
 
             // Ignore functions that do not change the type
-            if ty.instantiate_with_errors().could_unify_with_deeply(db, &ret_ty) {
+            if ty
+                .instantiate_with_errors()
+                .rebase_into_or_error(db, &ctx.goal)
+                .could_unify_with_deeply(db, &ret_ty)
+            {
                 return None;
             }
 
-            let self_ty =
-                it.self_param(db).expect("No self param").ty(db).instantiate(ty.type_arguments());
+            let self_ty = it
+                .self_param(db)
+                .expect("No self param")
+                .ty(db)
+                .instantiate(ty.type_arguments())
+                .rebase_into_or_error(db, &ctx.goal);
 
             // Ignore functions that have different self type
             if !self_ty.autoderef(db).any(|s_ty| ty == s_ty) {

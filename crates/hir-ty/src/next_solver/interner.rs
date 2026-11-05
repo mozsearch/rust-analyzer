@@ -1049,7 +1049,8 @@ impl<'db> Interner for DbInterner<'db> {
         f: impl FnOnce(&mut rustc_type_ir::search_graph::GlobalCache<Self>) -> R,
     ) -> R {
         // We make sure to reinit the cache when constructing the Interner.
-        tls_cache::borrow_assume_valid(self.db, f)
+        let krate = self.krate.expect("trait solving requires setting `DbInterner::krate`");
+        tls_cache::borrow_assume_valid(self.db, krate, f)
     }
 
     fn canonical_param_env_cache_get_or_insert<R>(
@@ -2488,13 +2489,20 @@ mod tls_cache {
     use crate::db::HirDatabase;
 
     use super::DbInterner;
-    use base_db::Nonce;
+    use base_db::{Crate, Nonce};
+    use rustc_hash::{FxBuildHasher, FxHashMap};
     use rustc_type_ir::search_graph::GlobalCache;
     use salsa::Revision;
     use std::cell::RefCell;
 
+    /// The solver's global caches, one per crate: which impls a goal's solution considers are
+    /// the crate's and its dependencies' (see `DbInterner::for_each_relevant_impl`), so a
+    /// solution for one crate isn't another's (ex: `u32: PartialEq<?T>` is ambiguous in a crate
+    /// whose dependencies have another `impl PartialEq<X> for u32`, and constrains `?T` to `u32`
+    /// in one whose don't), and sharing them made results depend on which crates' goals the
+    /// thread solved before.
     struct Cache {
-        cache: GlobalCache<DbInterner<'static>>,
+        caches: FxHashMap<Crate, GlobalCache<DbInterner<'static>>>,
         revision: Revision,
         db_nonce: Nonce,
     }
@@ -2502,7 +2510,7 @@ mod tls_cache {
     impl Cache {
         const fn default() -> Cache {
             Cache {
-                cache: GlobalCache::new(),
+                caches: FxHashMap::with_hasher(FxBuildHasher),
                 revision: Revision::max(),
                 db_nonce: Nonce::invalid(),
             }
@@ -2517,7 +2525,7 @@ mod tls_cache {
         GLOBAL_CACHE.with_borrow_mut(|handle| {
             let (db_nonce, revision) = db.nonce_and_revision();
             if handle.revision != revision || db_nonce != handle.db_nonce {
-                *handle = Cache { cache: GlobalCache::default(), revision, db_nonce };
+                *handle = Cache { caches: FxHashMap::default(), revision, db_nonce };
             }
         })
     }
@@ -2525,6 +2533,7 @@ mod tls_cache {
     #[inline]
     pub(super) fn borrow_assume_valid<'db, T>(
         db: &'db dyn HirDatabase,
+        krate: Crate,
         f: impl FnOnce(&mut GlobalCache<DbInterner<'db>>) -> T,
     ) -> T {
         if cfg!(debug_assertions) {
@@ -2542,7 +2551,7 @@ mod tls_cache {
                 std::mem::transmute::<
                     &mut GlobalCache<DbInterner<'static>>,
                     &mut GlobalCache<DbInterner<'db>>,
-                >(&mut handle.cache)
+                >(handle.caches.entry(krate).or_default())
             })
         })
     }
